@@ -1,7 +1,9 @@
+library(tidyverse)
+
 input_file <- "DESeq2_results.tsv"
 output_file <- "volcano.png"
 
-results <- read.delim(input_file, check.names = FALSE)
+results <- read_tsv(input_file, show_col_types = FALSE)
 required_columns <- c("log2FoldChange", "padj")
 if (!all(required_columns %in% names(results))) {
   stop("Input must contain log2FoldChange and padj columns.")
@@ -10,20 +12,20 @@ if (!all(vapply(results[required_columns], is.numeric, logical(1)))) {
   stop("log2FoldChange and padj must be numeric.")
 }
 
-results$regulation <- "No change"
-significant <- !is.na(results$padj) & results$padj < 0.05 &
-  is.finite(results$log2FoldChange)
-results$regulation[significant & results$log2FoldChange <= 2] <- "Downregulated"
-results$regulation[significant & results$log2FoldChange >= 2] <- "Upregulated"
+results <- results %>%
+  mutate(regulation = case_when(
+    is.finite(log2FoldChange) & padj < 0.05 & log2FoldChange >= 2 ~ "Upregulated",
+    is.finite(log2FoldChange) & padj < 0.05 & log2FoldChange <= 2 ~ "Downregulated",
+    TRUE ~ "No change"
+  ))
 
-valid <- is.finite(results$log2FoldChange) & is.finite(results$padj) &
-  results$padj >= 0 & results$padj <= 1
-plot_data <- results[valid, ]
+plot_data <- results %>%
+  filter(is.finite(log2FoldChange), is.finite(padj), between(padj, 0, 1)) %>%
+  mutate(neg_log10_padj = -log10(pmax(padj, .Machine$double.xmin))) %>%
+  arrange(regulation != "No change")
 if (nrow(plot_data) == 0) {
   stop("No genes have finite log2FoldChange and valid padj values to plot.")
 }
-plot_data$neg_log10_padj <- -log10(pmax(plot_data$padj, .Machine$double.xmin))
-plot_data <- plot_data[order(plot_data$regulation != "No change"), ]
 
 colors <- c(
   "Upregulated" = "#D55E00",
@@ -31,22 +33,16 @@ colors <- c(
   "No change" = "#999999"
 )
 
-png(output_file, width = 1800, height = 1500, res = 200)
-par(mar = c(5, 5, 4, 2) + 0.1)
-plot(
-  plot_data$log2FoldChange,
-  plot_data$neg_log10_padj,
-  col = adjustcolor(colors[plot_data$regulation], alpha.f = 0.65),
-  pch = 16,
-  cex = 0.65,
-  xlab = expression(log[2] ~ "fold change"),
-  ylab = expression(-log[10] ~ "adjusted p-value"),
-  main = "DESeq2 Volcano Plot"
-)
-abline(v = 2, h = -log10(0.05), lty = 2, col = "#555555")
-legend(
-  "topright", legend = names(colors), col = colors,
-  pch = 16, bty = "n", cex = 0.85
-)
-invisible(dev.off())
+volcano_plot <- ggplot(plot_data, aes(log2FoldChange, neg_log10_padj, color = regulation)) +
+  geom_point(alpha = 0.65, size = 1.2) +
+  geom_vline(xintercept = 2, linetype = "dashed", color = "#555555") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "#555555") +
+  scale_color_manual(values = colors, breaks = names(colors), drop = FALSE) +
+  labs(title = "DESeq2 Volcano Plot", color = NULL,
+       x = expression(log[2] ~ "fold change"),
+       y = expression(-log[10] ~ "adjusted p-value")) +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "top")
+
+ggsave(output_file, plot = volcano_plot, width = 9, height = 7.5, dpi = 200)
 message("Saved volcano plot to ", output_file)
